@@ -6,58 +6,7 @@ import socket
 import struct
 import re
 
-def const_map(prefix):
-    l = len(prefix)
-    nv = [(v,n[l:]) for n,v in globals().items() if n.startswith(prefix)]
-    return dict(nv)
-
-# Security types
-SECURITY_INVALID = 0
-SECURITY_NONE = 1
-SECURITY_VNC_AUTH = 2
-SECURITY_RA2 = 5
-SECURITY_RA2NE = 5
-SECURITY_TIGHT = 16
-SECURITY_ULTRA = 17
-SECURITY_TLS = 18
-SECURITY_VENCRYPT = 19
-SECURITY_GTK_VNC_SASL = 20
-SECURITY_MD5_HASH = 21
-SECURITY_COLIN_DEAN_XVP = 22
-
-security_name = const_map('SECURITY_')
-
-# Client to server messages
-CLIENT_SetPixelFormat = 0
-CLIENT_SetEncodings = 2
-CLIENT_FramebufferUpdateRequest = 3
-CLIENT_KeyEvent = 4
-CLIENT_PointerEvent = 5
-CLIENT_ClientCutText = 6
-
-client_name = const_map('CLIENT_')
-
-# Server to client messages
-
-SERVER_FrameBufferUpdate = 0
-SERVER_SetColourMapEntries = 1
-SERVER_Bell = 2
-SERVER_ServerCutText = 3
-
-server_name = const_map('SERVER_')
-
-# Update encodings
-
-ENCODING_Raw = 0
-ENCODING_CopyRect = 1
-ENCODING_RRE = 2
-ENCODING_Hextile = 5
-ENCODING_ZRLE = 16
-ENCODING_Cursor = -239
-ENCODING_DesktopSize = -223
-
-encoding_name = const_map('ENCODING_')
-
+from ptvnc.const import client_msg, server_msg, encoding, security
 
 _log = logging.getLogger('vnc')
 
@@ -127,12 +76,12 @@ class VncClient(object):
 		raise VncError('Server error in handshake: %r' % reason)
 	    secs = [ord(c) for c in self.read(nsec)]
 	    _log.debug('secs = %r',
-		       ', '.join(['%d=%s' % (n,security_name[n])
+		       ', '.join(['%d=%s' % (n, security.get_name(n))
 				  for n in secs]))
-	    if SECURITY_NONE not in secs:
-		raise VncError, 'SECURITY_NONE not supported'
+	    if security.NONE not in secs:
+		raise VncError, 'security.NONE not supported'
 	    else:
-		self.security = SECURITY_NONE
+		self.security = security.NONE
 		self.write(chr(self.security))
 	    
 	else:
@@ -178,7 +127,7 @@ class VncClient(object):
 	self.rgbmax = rgbmax
 	self.shift = shift
 	msg = struct.pack('B 3x B B B B HHH BBB 3x',
-			  CLIENT_SetPixelFormat,
+			  client_msg.SetPixelFormat,
 			  self.bpp, self.depth, self.be, self.tru,
 			  self.rgbmax[0], self.rgbmax[1], self.rgbmax[2],
 			  self.shift[0], self.shift[1], self.shift[2])
@@ -195,7 +144,7 @@ class VncClient(object):
 
     def SetEncodings(self, encs):
 	msg = struct.pack('>B x H %dI' % len(encs),
-			  CLIENT_SetEncodings, len(encs),
+			  client_msg.SetEncodings, len(encs),
 			  *encs)
 	self.write(msg)
 
@@ -223,8 +172,8 @@ class VncClient(object):
 	    self.sock.settimeout(None)
 	mtype = ord(ctype)
 	_log.debug('server message type %d=%s',
-		   mtype, server_name.get(mtype,'?'))
-	if mtype == SERVER_FrameBufferUpdate:
+		   mtype, server.get_name(mtype))
+	if mtype == server_msg.FrameBufferUpdate:
 	    self.FrameBufferUpdate()
 
     def FrameBufferUpdate(self):
@@ -240,8 +189,8 @@ class VncClient(object):
 		  = struct.unpack('>H H H H i', crect)
 	    _log.debug(' [%d] pos=%r size=%r enc=%d=%s',
 		       i, (xpos,ypos), (width,height),
-		       enc, encoding_name.get(enc,'?'))
-	    if enc == ENCODING_Raw:
+		       enc, encoding.get_name(enc))
+	    if enc == encoding.Raw:
 		if xpos + width > self.width:
 		    raise VncError, 'Invalid xpos %d width %d' % (xpos, width)
 		if ypos + height > self.height:
@@ -274,33 +223,3 @@ class VncClient(object):
 
     def write(self, msg):
 	self.sock.send(msg)
-
-if __name__=='__main__':
-    import optparse
-    op = optparse.OptionParser(usage='%prog [options] host [dspno]')
-    op.add_option('-d','--debug',
-		  action='store_true', default=False,
-		  help='Enable debug tracing')
-    op.add_option('-s','--shared',
-		  action='store_true', default=False,
-		  help='Allow shared display')
-    op.add_option('-f','--format',
-		  help='Set pixel format e.g. rgb222')
-    op.add_option('-r','--region',
-		  help='Set region to update')
-    opts, args = op.parse_args()
-    if not 1 <= len(args) <= 2:
-	op.error('Wrong number of arguments')
-    host = args[0]
-    if len(args) > 1:
-	port = 5900 + int(args[1])
-    else:
-	port = 5900
-    if opts.region is not None:
-	opts.region = map(int, opts.region.split('x'))
-    level = (logging.DEBUG if opts.debug else
-	     logging.INFO)
-    logging.basicConfig(level=level)
-    vnc = VncClient(host, port, shared=opts.shared,
-		    format=opts.format, region=opts.region)
-    vnc.run()
