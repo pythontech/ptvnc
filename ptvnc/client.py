@@ -39,14 +39,7 @@ class VncClient(object):
 	else:
 	    self.request_all()
 	self.poll()
-	count = 0
-	while True:
-	    b = self.read(1)
-	    print '%02x' % ord(b),
-	    count += 1
-	    if count == 8:
-		print
-		count = 0
+	self.drain()
 
     def handshake(self):
 	'''Client has connected.  Expect ProtocolVersion from server'''
@@ -172,9 +165,31 @@ class VncClient(object):
 	    self.sock.settimeout(None)
 	mtype = ord(ctype)
 	_log.debug('server message type %d=%s',
-		   mtype, server.get_name(mtype))
+		   mtype, server_msg.get_name(mtype))
 	if mtype == server_msg.FrameBufferUpdate:
 	    self.FrameBufferUpdate()
+
+    def drain(self):
+	count = 0
+	data = []
+	self.sock.settimeout(2)
+	while True:
+	    try:
+		b = self.read(1)
+	    except socket.timeout:
+		break
+	    count += 1
+	    data.append(b)
+	    #print '%02x' % ord(b),
+	    if count % 8 == 0:
+		#print
+		pass
+	self.sock.settimeout(None)
+	if count:
+	    print 'Drained %d bytes' % count
+	    if all([c=='\0' for c in data]):
+		print 'All zero'
+	    open('drained','w').write(''.join(data))
 
     def FrameBufferUpdate(self):
 	'''Handle FrameBufferUpdate from server.
