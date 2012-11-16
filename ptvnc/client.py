@@ -33,6 +33,7 @@ class VncClient(object):
 	    self.set_rgb222()
 	elif self.format == 'rgb565':
 	    self.set_rgb565()
+	self.SetEncodings([encoding.RRE, encoding.Raw])
 	self.poll()
 	if self.region is not None:
 	    self.FrameBufferUpdateRequest(0,0, *self.region)
@@ -224,6 +225,8 @@ class VncClient(object):
 		if ypos + height > self.height:
 		    raise VncError, 'Invalid ypos %d height %d' % (xpos, height)
 		self.rectangle_Raw(xpos,ypos,width,height)
+	    elif enc == encoding.RRE:
+		self.rectangle_RRE(xpos,ypos,width,height)
 	    else:
 		# FIXME read data according to encoding
 		_log.error('Unhandled encoding %d', enc)
@@ -236,7 +239,18 @@ class VncClient(object):
 	    # FIXME render into buffer
 	    _log.debug('  {%d}: %s', ypos+r,
 		       ' '.join(['%02x' % ord(c) for c in row[:20]]))
-		
+
+    def rectangle_RRE(self, xpos,ypos, width,height):
+	pixbytes = self.bpp / 8
+	pixfmt = {1:'B', 2:'H', 4:'I'}[pixbytes]
+	nsub, bg = struct.unpack('>I'+pixfmt, self.read(4+pixbytes))
+	_log.debug('  nsub=%d bg=%#x', nsub, bg)
+	for i in range(nsub):
+	    fg, x,y,w,h = struct.unpack('>'+pixfmt+'HHHH',
+					self.read(pixbytes + 8))
+	    _log.debug('  {%d}: pos=%r size=%r fg=%#x',
+		       i, (x,y), (w,h), fg)
+
     def read_string(self):
 	slen = self.read_u32()
 	return self.read(slen)
