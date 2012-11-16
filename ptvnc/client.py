@@ -38,7 +38,8 @@ class VncClient(object):
 	    self.FrameBufferUpdateRequest(0,0, *self.region)
 	else:
 	    self.request_all()
-	self.poll()
+	for i in range(3):
+	    self.poll()
 	self.drain()
 
     def handshake(self):
@@ -168,6 +169,10 @@ class VncClient(object):
 		   mtype, server_msg.get_name(mtype))
 	if mtype == server_msg.FrameBufferUpdate:
 	    self.FrameBufferUpdate()
+	elif mtype == server_msg.SetColourMapEntries:
+	    self.SetColourMapEntries()
+	else:
+	    raise VncError, 'Unhandled server message %d' % mtype
 
     def drain(self):
 	count = 0
@@ -190,6 +195,14 @@ class VncClient(object):
 	    if all([c=='\0' for c in data]):
 		print 'All zero'
 	    open('drained','w').write(''.join(data))
+
+    def SetColourMapEntries(self):
+	'''Handle SetColourMapEntries from server.
+	'''
+	first, ncol = struct.unpack('>x H H', self.read(5))
+	for i in range(ncol):
+	    r,g,b = struct.unpack('>HHH', self.read(6))
+	    _log.debug(' colour[%d] = %d,%d,%d' % (first+i, r,g,b))
 
     def FrameBufferUpdate(self):
 	'''Handle FrameBufferUpdate from server.
