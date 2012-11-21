@@ -16,6 +16,8 @@ op.add_option('-f','--format',
               help='Set pixel format e.g. rgb222')
 op.add_option('-r','--region',
               help='Set region to update')
+op.add_option('-p','--password', metavar='FILE',
+              help='Set VNC password from FILE')
 opts, args = op.parse_args()
 if not 1 <= len(args) <= 2:
     op.error('Wrong number of arguments')
@@ -29,6 +31,10 @@ if opts.region is not None:
 level = (logging.DEBUG if opts.debug else
          logging.INFO)
 logging.basicConfig(level=level)
+password = None
+if opts.password is not None:
+    password = open(opts.password).readline().rstrip()
 vnc = VncClient(host, port, shared=opts.shared,
-                format=opts.format, region=opts.region)
+                format=opts.format, region=opts.region,
+                password=password)
 vnc.run()

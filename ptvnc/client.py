@@ -7,13 +7,26 @@ import struct
 import re
 
 from ptvnc.const import client_msg, server_msg, encoding, security
+from ptvnc.pyDes import des
 
 _log = logging.getLogger('vnc')
 
 class VncError(Exception): pass
 
+def bitrev(b):
+    rev = 0
+    for i in range(8):
+        if b & (1 << i):
+            rev |= 0x80 >> i
+    return rev
+
+class VncDES(des):
+    def setKey(self, key):
+        revkey = ''.join([chr(bitrev(ord(c))) for c in key])
+        des.setKey(self, revkey)
+
 class VncClient(object):
-    def __init__(self, host, port=5900, shared=False, format=None, region=None):
+    def __init__(self, host, port=5900, shared=False, format=None, region=None, password=None):
 	self.host = host
 	self.port = port
 	self.shared = shared
@@ -21,6 +34,7 @@ class VncClient(object):
 	    raise ValueError, 'Invalid format %r' % format
 	self.format = format
 	self.region = region
+        self.password = password
 
     def run(self):
 	self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,11 +87,21 @@ class VncClient(object):
 	    _log.debug('secs = %r',
 		       ', '.join(['%d=%s' % (n, security.get_name(n))
 				  for n in secs]))
-	    if security.NONE not in secs:
-		raise VncError, 'security.NONE not supported'
-	    else:
+            if security.VNC_Authentication in secs:
+		self.security = security.VNC_Authentication
+		self.write(chr(self.security))
+                _log.info('VNC Auth')
+                challenge = self.read(16)
+                _log.debug('challenge %r', challenge)
+                pw = self.password.ljust(8,'\0')[:8]
+                response = VncDES(pw).encrypt(challenge)
+                _log.debug('response %r', response)
+                self.write(response)
+            elif security.NONE:
 		self.security = security.NONE
 		self.write(chr(self.security))
+            else:
+		raise VncError, 'No supported security type available'
 	    
 	else:
 	    # 3.3
