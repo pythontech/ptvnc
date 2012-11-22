@@ -6,14 +6,26 @@ import Tkinter
 from Tkinter import *
 import PIL.Image
 import ImageTk
+from ptvnc.client import VncClient
+from ptvnc.display import VncDisplay
 
-class Display(Frame):
+class Display(Frame, VncDisplay):
     '''A Tk widget which displays a PIL Image'''
-    def __init__(self, *args, **kw):
-	Frame.__init__(self, *args, **kw)
+    def __init__(self, master, size, *args, **kw):
+	Frame.__init__(self, master, *args, **kw)
 	self.photo = None
 	self.label = Label(self)
 	self.label.pack()
+	self.image = PIL.Image.new('RGB', size)
+
+    def fill_rect(self, x,y, w,h, colour):
+	rgb = ((colour & 0x001f) << 3,
+	       (colour & 0x07e0) >> 3,
+	       (colour & 0xf800) >> 8)
+	self.image.paste(rgb, (x, y, x+w, y+h))
+
+    def update_done(self):
+	self.show(self.image)
 
     def show(self, image):
 	self.photo = ImageTk.PhotoImage(image)
@@ -48,33 +60,44 @@ class App(Tk):
 	self.lab = Label(self, image=self.photo, width=200, height=150)
 	self.lab.pack()
 
-#a = App()
-a = Tk()
-d = Display(a)
-d.pack()
+if __name__=='__main__':
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
+    app = Tk()
+    disp = Display(app, (800,600))
+    disp.pack()
+    cl = VncClient('jtv.jet.efda.org',5925,format='rgb565',display=disp)
+    cl.run()
+    app.mainloop()
 
-#slate = PIL.Image.new('RGB', (200,150))
-#sprite = PIL.Image.new('RGB', (50,50), color=(255,128,0))
-#d.display(slate)
+if 0:
+    #a = App()
+    a = Tk()
+    d = Display(a)
+    d.pack()
 
-def splodge():
-    slate.paste(sprite, (20,20,70,70))
-    d.show(slate)
+    # slate = PIL.Image.new('RGB', (200,150))
+    # sprite = PIL.Image.new('RGB', (50,50), color=(255,128,0))
+    # d.display(slate)
 
-def splurge():
-    slate.paste((50,200,20), (10,30,110,40))
-    d.show(slate)
+    def splodge():
+	slate.paste(sprite, (20,20,70,70))
+	d.show(slate)
 
-b = Buffer((200,150))
-d.show(b.image)
+    def splurge():
+	slate.paste((50,200,20), (10,30,110,40))
+	d.show(slate)
 
-#a.after(1000, splodge)
-#a.after(2000, splurge)
-red = (255,0,0)
-green = (0,255,0)
+    b = Buffer((200,150))
+    d.show(b.image)
 
-a.after(1000, b.fill_rect, red, (0,0),(50,50), d)
-a.after(2000, b.fill_rect, green, (20,20),(70,50), d)
-a.after(3000, b.copy_rect, (30,0), (130,10), (20,80), d)
+    # a.after(1000, splodge)
+    # a.after(2000, splurge)
+    red = (255,0,0)
+    green = (0,255,0)
 
-a.mainloop()
+    a.after(1000, b.fill_rect, red, (0,0),(50,50), d)
+    a.after(2000, b.fill_rect, green, (20,20),(70,50), d)
+    a.after(3000, b.copy_rect, (30,0), (130,10), (20,80), d)
+
+    a.mainloop()
