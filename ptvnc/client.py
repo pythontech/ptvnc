@@ -25,8 +25,12 @@ class VncDES(des):
         revkey = ''.join([chr(bitrev(ord(c))) for c in key])
         des.setKey(self, revkey)
 
+def ignore(*args, **kw):
+    '''Do-nothing function'''
+    pass
+
 class VncClient(object):
-    def __init__(self, host, port=5900, shared=False, format=None, region=None, password=None):
+    def __init__(self, host, port=5900, shared=False, format=None, region=None, password=None, display=None):
 	self.host = host
 	self.port = port
 	self.shared = shared
@@ -35,6 +39,11 @@ class VncClient(object):
 	self.format = format
 	self.region = region
         self.password = password
+	if display is None:
+	    import ptvnc.display
+	    self.display = ptvnc.display.VncDisplay()
+	else:
+	    self.display = display
 
     def run(self):
 	self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -132,6 +141,7 @@ class VncClient(object):
 		  struct.unpack('>B B B B H H H B B B 3x', head[4:])
 	self.rgbmax = (rmax, gmax, bmax)
 	self.shift = (rsh, gsh, bsh)
+	self.calc_pixel()
 	_log.info('bpp=%d depth=%d, tru=%d max=%r shift=%r',
 		  self.bpp, self.depth, self.tru, self.rgbmax, self.shift)
 	self.name = self.read_string()
@@ -150,16 +160,18 @@ class VncClient(object):
 			  self.bpp, self.depth, self.be, self.tru,
 			  self.rgbmax[0], self.rgbmax[1], self.rgbmax[2],
 			  self.shift[0], self.shift[1], self.shift[2])
+	self.write(msg)
+	self.calc_pixel()
 
     def set_rgb222(self):
 	'''Request 2 bits per pixel as per vncviewer'''
-	self.SetPixelFormat(bpp=8, depth=6, be=0, tru=1,
+	self.SetPixelFormat(bpp=8, depth=6, be=1, tru=1,
 			    rgbmax=(3,3,3), shift=(0,2,4))
 
     def set_rgb565(self):
 	'''Request 5,6,5 bits per pixel'''
-	self.SetPixelFormat(bpp=16, depth=16, be=0, tru=1,
-			    rgbmax=(5,6,5), shift=(0,5,11))
+	self.SetPixelFormat(bpp=16, depth=16, be=1, tru=1,
+			    rgbmax=(31,63,31), shift=(0,5,11))
 
     def SetEncodings(self, encs):
 	msg = struct.pack('>B x H %dI' % len(encs),
@@ -252,40 +264,64 @@ class VncClient(object):
 	    elif enc == encoding.RRE:
 		self.rectangle_RRE(xpos,ypos,width,height)
 	    else:
-		# FIXME read data according to encoding
 		_log.error('Unhandled encoding %d', enc)
+	self.display.update_done()
 
     def rectangle_Raw(self, xpos,ypos, width,height):
-	rowbytes = width * self.bpp / 8
+	'''Handle a rectangle update in Raw encoding'''
+	rowbytes = width * self.pixbytes
 	_log.debug('  %d bytes', height * rowbytes)
-	for r in range(height):
-	    row = self.read(rowbytes)
+	for dy in range(height):
+	    row = self.read_pixels(width)
 	    # FIXME render into buffer
-	    _log.debug('  {%d}: %s', ypos+r,
-		       ' '.join(['%02x' % ord(c) for c in row[:20]]))
+	    _log.debug('  {%d}: %s', ypos+dy,
+		       ' '.join(['%02x' % p for p in row[:20]]))
+	    self.display.paint_row(xpos,ypos+dy, width, row)
 
     def rectangle_RRE(self, xpos,ypos, width,height):
-	pixbytes = self.bpp / 8
-	pixfmt = {1:'B', 2:'H', 4:'I'}[pixbytes]
-	nsub, bg = struct.unpack('>I'+pixfmt, self.read(4+pixbytes))
+	'''Handle an update rectangle in RRE encoding'''
+	nsub = self.read_u32()
+	bg = self.read_pixel()
 	_log.debug('  nsub=%d bg=%#x', nsub, bg)
+	self.display.fill_rect(xpos,ypos, width,height, bg)
 	for i in range(nsub):
-	    fg, x,y,w,h = struct.unpack('>'+pixfmt+'HHHH',
-					self.read(pixbytes + 8))
+	    fg = self.read_pixel()
+	    x,y,w,h = struct.unpack('>HHHH', self.read(8))
 	    _log.debug('  {%d}: pos=%r size=%r fg=%#x',
 		       i, (x,y), (w,h), fg)
+	    self.display.fill_rect(xpos+x,ypos+y, w,h, fg)
+
+    def calc_pixel(self):
+	'''Cache info for reading pixel off the wire'''
+	self.pixbytes = self.bpp / 8
+	self.pixend = '>' if self.be else '<'
+	self.pixfmt = {1:'B', 2:'H', 4:'I'}[self.pixbytes]
+
+    def read_pixel(self):
+	'''Read a single pixel value off the wire'''
+	pix, = struct.unpack(self.pixend+self.pixfmt, self.read(self.pixbytes))
+	return pix
+
+    def read_pixels(self, count):
+	'''Read a number of pixels off the wire'''
+	format = '%s%d%s' % (self.pixend, count, self.pixfmt)
+	return struct.unpack(format, self.read(count * self.pixbytes))
 
     def read_string(self):
+	'''Read a string preceded by unsigned 32-bit length'''
 	slen = self.read_u32()
 	return self.read(slen)
 
     def read_u32(self):
+	'''Read an unsigned 32-bit int'''
 	c4 = self.read(4)
 	i4, = struct.unpack('>I', c4)
 	return i4
 
     def read(self, nbytes):
+	'''Read a number of byted'''
 	return self.sock.recv(nbytes)
 
     def write(self, msg):
+	'''Write a number of bytes'''
 	self.sock.send(msg)
