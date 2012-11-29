@@ -216,7 +216,7 @@ class VncClient(object):
 		   mtype, server_msg.get_name(mtype))
 	if mtype == server_msg.FrameBufferUpdate:
 	    self.FrameBufferUpdate()
-	    print 'update was %d bytes' % (self.read_count - start_count)
+	    _log.debug('update was %d bytes', self.read_count - start_count)
 	elif mtype == server_msg.SetColourMapEntries:
 	    self.SetColourMapEntries()
 	else:
