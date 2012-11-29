@@ -12,12 +12,61 @@
 #include <netdb.h>
 #include "vncconst.h"
 
+/*--- Supported pixel formats */
 typedef enum {
+  VNCFORMAT_UNKNOWN = -1,
   VNCFORMAT_NONE,		/* No preference, use server setting */
   VNCFORMAT_RGB565,
 } VncFormat;
 
+/*--- Opaque data type */
 typedef struct _VncClient VncClient;
+
+/* Abstract interface for painting display */
+typedef gboolean VncDisplayOpen(void *, const char */*name*/,
+				guint /*width*/, guint /*height*/,
+				VncFormat /*format*/,
+				GError **);
+typedef gboolean VncDisplayPaintRow(void *, guint /*x*/,guint /*y*/,
+				    gsize /*count*/, const void */*pixels*/,
+				    GError **);
+typedef gboolean VncDisplayFillRect(void *, guint /*x*/,guint /*y*/,
+				    guint /*width*/,guint /*height*/,
+				    guint /*pixel*/,
+				    GError **);
+typedef gboolean VncDisplayCopyRect(void *, guint /*x*/,guint /*y*/,
+				    guint /*width*/,guint /*height*/,
+				    guint /*srcx*/,guint /*srcy*/,
+				    GError **);
+typedef gboolean VncDisplayUpdateDone(void *, GError **);
+
+typedef struct {
+  gsize size;
+  VncDisplayOpen *open;
+  VncDisplayPaintRow *paint_row;
+  VncDisplayFillRect *fill_rect;
+  VncDisplayCopyRect *copy_rect;
+  VncDisplayUpdateDone *update_done;
+} VncDisplayMethods;
+
+typedef struct {
+  const VncDisplayMethods *methods;
+  void *priv;				/* Provate data */
+} IVncDisplay;
+
+/*--- Check if the interface supports a method */
+#define CAN(_i,_m) ((_i) && ((const char *)&((_i)->methods->_m) - (const char *)((_i)->methods)) < (_i)->methods->size && (_i)->methods->_m)
+
+#define CALL0(_i,_m) (((_i)->methods->_m)((_i)->priv))
+#define CALL1(_i,_m,_1) (((_i)->methods->_m)((_i)->priv,_1))
+#define CALL2(_i,_m,_1,_2) (((_i)->methods->_m)((_i)->priv,_1,_2))
+#define CALL3(_i,_m,_1,_2,_3) (((_i)->methods->_m)((_i)->priv,_1,_2,_3))
+#define CALL4(_i,_m,_1,_2,_3,_4) (((_i)->methods->_m)((_i)->priv,_1,_2,_3,_4))
+#define CALL5(_i,_m,_1,_2,_3,_4,_5) (((_i)->methods->_m)((_i)->priv,_1,_2,_3,_4,_5))
+#define CALL6(_i,_m,_1,_2,_3,_4,_5,_6) (((_i)->methods->_m)((_i)->priv,_1,_2,_3,_4,_5,_6))
+#define CALL7(_i,_m,_1,_2,_3,_4,_5,_6,_7) (((_i)->methods->_m)((_i)->priv,_1,_2,_3,_4,_5,_6,_7))
+#define CALL8(_i,_m,_1,_2,_3,_4,_5,_6,_7,_8) (((_i)->methods->_m)((_i)->priv,_1,_2,_3,_4,_5,_6,_7,_8))
+#define CALL9(_i,_m,_1,_2,_3,_4,_5,_6,_7,_8,_9) (((_i)->methods->_m)((_i)->priv,_1,_2,_3,_4,_5,_6,_7,_8,_9))
 
 struct _VncClient {
   /* config */
@@ -26,6 +75,8 @@ struct _VncClient {
   gboolean shared;
   VncFormat format;
   const char *password;
+  /* callbacks */
+  const IVncDisplay *display;
   /* FIXME region */
   /* state */
   int sock;
@@ -64,6 +115,9 @@ static gboolean _update_RAW(VncClient *self, guint xpos,guint ypos,
 			    guint width, guint height, GError **error);
 static gboolean _update_RRE(VncClient *self, guint xpos,guint ypos,
 			    guint width, guint height, GError **error);
+static gboolean _fill_rect(VncClient *self,
+			   guint x, guint y, guint w, guint h, guint pixel,
+			   GError **error);
 static gboolean _read(VncClient *self, void *data, size_t size, GError **error);
 static gboolean _write(VncClient *self, const void *data, size_t size, GError **error);
 
@@ -109,6 +163,12 @@ vncclient_create(const char *host, guint16 port, gboolean shared, VncFormat form
   self->shared = shared;
   self->format = format;
   return self;
+}
+
+void
+vncclient_set_display(VncClient *self, const IVncDisplay *display)
+{
+  self->display = display;
 }
 
 gboolean
@@ -313,8 +373,19 @@ _initialisation(VncClient *self, GError **error)
 	 self->bpp, self->depth, self->be, self->tru,
 	 self->max[0], self->max[1], self->max[2],
 	 self->shift[0], self->shift[1], self->shift[2]);
+  /*--- FIXME infer format if known */
   READSTRING(&self->name);
   g_debug("name = %s", self->name);
+  /*--- Tell display the size and name of the remote frame.
+   * It can then allocate its pixel buffer etc.
+   */
+  if (CAN(self->display, open)) {
+    if (! CALL5(self->display, open, self->name,
+		self->width, self->height, VNCFORMAT_UNKNOWN,
+		error)) {
+      return FALSE;
+    }
+  }
   return TRUE;
 }
 
@@ -494,6 +565,12 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
       return FALSE;
     }
   }
+  /*--- All rectangles processed.
+   * Tell user, who can then request another update.
+   */
+  if (CAN(self->display, update_done)) {
+    if (! CALL1(self->display, update_done, error)) return FALSE;
+  }
   return TRUE;
 }
 
@@ -503,6 +580,7 @@ _update_RAW(VncClient *self, guint xpos,guint ypos, guint width, guint height,
 {
   int i;
   gsize rowbytes = width * self->pixbytes;
+  /*--- FIXME assumes 16-bit */
   guint16 *row = g_new(guint16, width);
   for (i=0; i < height; i++) {
     READ(row, rowbytes);
@@ -515,6 +593,11 @@ _update_RAW(VncClient *self, guint xpos,guint ypos, guint width, guint height,
     } else {
       g_debug("  [%d]: %04x %04x %04x %04x%s", i, row[0],row[1],row[2],row[3],
 	      width > 4 ? "...":"");
+    }
+    if (CAN(self->display, paint_row)) {
+      if (! CALL5(self->display, paint_row, xpos, ypos+i, width, row, error)) {
+	return FALSE;
+      }
     }
   }
   g_free(row);
@@ -532,7 +615,7 @@ _update_RRE(VncClient *self, guint xpos,guint ypos, guint width, guint height,
   READU32(&nsub);
   READ(&bg, sizeof(bg));
   g_debug("  nsub=%u bg=%04x", nsub, bg);
-  /* fill_rect(xpos,ypos,width,height, bg) */
+  if (! _fill_rect(self, xpos, ypos, width, height, bg, error)) return FALSE;
   for (i=0; i < nsub; i++) {
     READ(&fg, sizeof(fg));
     READU16(&x);
@@ -541,7 +624,17 @@ _update_RRE(VncClient *self, guint xpos,guint ypos, guint width, guint height,
     READU16(&h);
     g_debug("  {%d}: pos=(%d,%d) size=(%d,%d) fg=%04x",
 	    i, x,y, w,h, fg);
-    /* fill_rect(xpos+x,ypos+y,w,h, bg) */
+    if (! _fill_rect(self, xpos+x, ypos+y, w, h, fg, error)) return FALSE;
+  }
+  return TRUE;
+}
+
+static gboolean
+_fill_rect(VncClient *self, guint x, guint y, guint w, guint h, guint pixel,
+	   GError **error)
+{
+  if (CAN(self->display, fill_rect)) {
+    return CALL6(self->display, fill_rect, x, y, w, h, pixel, error);
   }
   return TRUE;
 }
