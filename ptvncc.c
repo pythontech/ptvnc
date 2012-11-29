@@ -1,7 +1,7 @@
 /*=======================================================================
  *	VNC client
  *=======================================================================*/
-#include <glib.h>
+#include "ptvncc.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
@@ -11,48 +11,6 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include "vncconst.h"
-
-/*--- Supported pixel formats */
-typedef enum {
-  VNCFORMAT_UNKNOWN = -1,
-  VNCFORMAT_NONE,		/* No preference, use server setting */
-  VNCFORMAT_RGB565,
-} VncFormat;
-
-/*--- Opaque data type */
-typedef struct _VncClient VncClient;
-
-/* Abstract interface for painting display */
-typedef gboolean VncDisplayOpen(void *, const char */*name*/,
-				guint /*width*/, guint /*height*/,
-				VncFormat /*format*/,
-				GError **);
-typedef gboolean VncDisplayPaintRow(void *, guint /*x*/,guint /*y*/,
-				    gsize /*count*/, const void */*pixels*/,
-				    GError **);
-typedef gboolean VncDisplayFillRect(void *, guint /*x*/,guint /*y*/,
-				    guint /*width*/,guint /*height*/,
-				    guint /*pixel*/,
-				    GError **);
-typedef gboolean VncDisplayCopyRect(void *, guint /*x*/,guint /*y*/,
-				    guint /*width*/,guint /*height*/,
-				    guint /*srcx*/,guint /*srcy*/,
-				    GError **);
-typedef gboolean VncDisplayUpdateDone(void *, GError **);
-
-typedef struct {
-  gsize size;
-  VncDisplayOpen *open;
-  VncDisplayPaintRow *paint_row;
-  VncDisplayFillRect *fill_rect;
-  VncDisplayCopyRect *copy_rect;
-  VncDisplayUpdateDone *update_done;
-} VncDisplayMethods;
-
-typedef struct {
-  const VncDisplayMethods *methods;
-  void *priv;				/* Provate data */
-} IVncDisplay;
 
 /*--- Check if the interface supports a method */
 #define CAN(_i,_m) ((_i) && ((const char *)&((_i)->methods->_m) - (const char *)((_i)->methods)) < (_i)->methods->size && (_i)->methods->_m)

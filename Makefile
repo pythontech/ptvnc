@@ -3,6 +3,8 @@ LD	= cc
 CFLAGS	= -g -Wall
 LDFLAGS	= -g
 
+all:		ptvncc
+
 #GLIB_FLAGS = $(shell /usr/bin/glib-config --cflags)
 GLIB_FLAGS = -I/usr/include/glib-2.0 -I/usr/lib/glib-2.0/include
 #GLIB_LIBS = $(shell /usr/bin/glib-config --libs)
@@ -10,6 +12,7 @@ GLIB_LIBS = -L/usr/lib -lglib-2.0
 
 ptvncc_FLAGS = $(GLIB_FLAGS)
 ptvncc_LIBS = $(GLIB_LIBS)
+ptvncc.o:	ptvncc.h
 
 %:		%.o
 		$(LD) $(LDFLAGS) -o $@ $< $($*_LIBS)
