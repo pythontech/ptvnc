@@ -52,3 +52,11 @@ security = Enum(
     MD5_hash = 21,
     Colin_Dean_xvp = 22,
     )
+
+hextile = Enum(
+    RAW = 1,
+    BG = 2,
+    FG = 4,
+    ANYSUB = 8,
+    COLOUR = 16,
+)
