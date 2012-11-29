@@ -62,6 +62,8 @@ static gboolean _recv_request(VncClient *self, GError **error);
 static gboolean _recv_FramebufferUpdate(VncClient *self, GError **error);
 static gboolean _update_RAW(VncClient *self, guint xpos,guint ypos,
 			    guint width, guint height, GError **error);
+static gboolean _update_RRE(VncClient *self, guint xpos,guint ypos,
+			    guint width, guint height, GError **error);
 static gboolean _read(VncClient *self, void *data, size_t size, GError **error);
 static gboolean _write(VncClient *self, const void *data, size_t size, GError **error);
 
@@ -93,6 +95,7 @@ enum {
 
 /*--- Encodings currently supported by client, in preference order */
 static const gint encodings[] = {
+  ENCODING_RRE,
   ENCODING_Raw,
   ENCODING_CopyRect,
 };
@@ -482,10 +485,10 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
     case ENCODING_CopyRect:
       if (! _update_COPYRECT(self, xpos,ypos, width,height, error)) return FALSE;
       break;
+#endif
     case ENCODING_RRE:
       if (! _update_RRE(self, xpos,ypos, width,height, error)) return FALSE;
       break;
-#endif
     default:
       ERROR1(BAD_ENCODING, "Unexpected rectangle encoding %d", enc);
       return FALSE;
@@ -515,6 +518,31 @@ _update_RAW(VncClient *self, guint xpos,guint ypos, guint width, guint height,
     }
   }
   g_free(row);
+  return TRUE;
+}
+
+static gboolean
+_update_RRE(VncClient *self, guint xpos,guint ypos, guint width, guint height,
+	    GError **error)
+{
+  guint32 nsub;
+  guint16 fg, bg;
+  guint16 x,y,w,h;
+  guint i;
+  READU32(&nsub);
+  READ(&bg, sizeof(bg));
+  g_debug("  nsub=%u bg=%04x", nsub, bg);
+  /* fill_rect(xpos,ypos,width,height, bg) */
+  for (i=0; i < nsub; i++) {
+    READ(&fg, sizeof(fg));
+    READU16(&x);
+    READU16(&y);
+    READU16(&w);
+    READU16(&h);
+    g_debug("  {%d}: pos=(%d,%d) size=(%d,%d) fg=%04x",
+	    i, x,y, w,h, fg);
+    /* fill_rect(xpos+x,ypos+y,w,h, bg) */
+  }
   return TRUE;
 }
 
