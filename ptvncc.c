@@ -47,18 +47,21 @@ struct _VncClient {
 static gboolean _handshake(VncClient *self, GError **error);
 static gboolean _security(VncClient *self, GError **error);
 static gboolean _initialisation(VncClient *self, GError **error);
+static gboolean _set_format(VncClient *self, GError **error);
 static gboolean _send_SetPixelFormat(VncClient *self,
 				     guint bpp, guint depth, gboolean be, gboolean tru,
-				     guint rmax, guint gmax, guint bmax,
-				     guint rsh, guint gsh, guint bsh,
+				     guint max[3], guint shift[3],
 				     GError **error);
-static gboolean _send_FrameBufferUpdateRequest(VncClient *self,
+static gboolean _send_SetEncodings(VncClient *self, const gint encs[], gsize numenc, GError **);
+static gboolean _send_FramebufferUpdateRequest(VncClient *self,
 					       guint xpos, guint ypos, guint width, guint height,
 					       gboolean incremental,
 					       GError **error);
 static void _calc_pixel(VncClient *self);
 static gboolean _recv_request(VncClient *self, GError **error);
 static gboolean _recv_FramebufferUpdate(VncClient *self, GError **error);
+static gboolean _update_RAW(VncClient *self, guint xpos,guint ypos,
+			    guint width, guint height, GError **error);
 static gboolean _read(VncClient *self, void *data, size_t size, GError **error);
 static gboolean _write(VncClient *self, const void *data, size_t size, GError **error);
 
@@ -87,6 +90,12 @@ enum {
 #define ERROR1(t,f,a1) g_set_error(error, VNCCLIENT_ERROR, VNCCLIENT_E_##t, f,a1)
 #define ERROR2(t,f,a1,a2) g_set_error(error, VNCCLIENT_ERROR, VNCCLIENT_E_##t, f,a1,a2)
 #define ERROR3(t,f,a1,a2,a3) g_set_error(error, VNCCLIENT_ERROR, VNCCLIENT_E_##t, f,a1,a2,a3)
+
+/*--- Encodings currently supported by client, in preference order */
+static const gint encodings[] = {
+  ENCODING_Raw,
+  ENCODING_CopyRect,
+};
 
 VncClient *
 vncclient_create(const char *host, guint16 port, gboolean shared, VncFormat format, GError **error)
@@ -123,15 +132,25 @@ vncclient_run(VncClient *self, GError **error)
     close(self->sock);
     return FALSE;
   }
+  g_debug("connected to %s:%d", self->host, self->port);
   if (! _handshake(self, error)) return FALSE;
   if (! _security(self, error)) return FALSE;
   if (! _initialisation(self, error)) return FALSE;
-#if NOTYET
   if (self->format != VNCFORMAT_NONE) {
     if (! _set_format(self, error)) return FALSE;
   }
-#endif
-  /* FIXME */
+  if (! _send_SetEncodings(self, encodings, G_N_ELEMENTS(encodings), error)) return FALSE;
+
+  /*--- Request initial frame */
+  if (! _send_FramebufferUpdateRequest(self,
+				       0, 0,
+				       MIN(self->width,100), MIN(self->height,100),
+				       FALSE, error)) return FALSE;
+
+  /*--- Get response */
+  if (! _recv_request(self, error)) return FALSE;
+  
+  g_debug("end of test");
   return TRUE;
 }
 
@@ -145,6 +164,7 @@ vncclient_run(VncClient *self, GError **error)
 #define WRITEU8(b) do {guint8 _v = (b); WRITE(&_v, 1);} while (0)
 #define WRITEU16(b) do {guint16 _v = htons(b); WRITE(&_v, 2);} while (0)
 #define WRITEU32(b) do {guint32 _v = htonl(b); WRITE(&_v, 4);} while (0)
+#define WRITEI32(b) do {gint32 _v = htonl(b); WRITE(&_v, 4);} while (0)
 #define FLUSH()
 
 #define atoi3(s) ((((s)[0]-'0')*10 + (s)[1]-'0')*10 + (s)[2]-'0')
@@ -153,7 +173,7 @@ vncclient_run(VncClient *self, GError **error)
 static gboolean
 _handshake(VncClient *self, GError **error)
 {
-  unsigned char msg[12+1];
+  char msg[12+1];
   guint vhi, vlo;
 
   READ(msg, 12);
@@ -214,6 +234,7 @@ _security(VncClient *self, GError **error)
       return FALSE;
     }
     self->security = secs[i];
+    g_debug("Using security %d", self->security);
     WRITEU8(self->security);
     switch (self->security) {
     case SECURITY_VNC_Authentication:
@@ -227,7 +248,6 @@ _security(VncClient *self, GError **error)
       break;
     }
     g_free(secs);
-    WRITEU8(self->security);
 
   } else {
     /* 3.3 */
@@ -241,6 +261,7 @@ _security(VncClient *self, GError **error)
     READU32(&sec_result);
     if (sec_result == 0) {
       /* OK */
+      g_debug("Security OK");
     } else if (sec_result == 1) {
       /* Failed */
       char *reason = NULL;
@@ -295,22 +316,43 @@ _initialisation(VncClient *self, GError **error)
 }
 
 static gboolean
+_set_format(VncClient *self, GError **error)
+{
+  switch (self->format) {
+  case VNCFORMAT_RGB565: {
+    static guint max[3] = {31,63,13};
+    static guint shift[3] = {11,5,0};
+    g_debug("setting RGB565");
+    if (! _send_SetPixelFormat(self,
+			       16, 6, (G_BYTE_ORDER==G_BIG_ENDIAN), 1,
+			       max, shift,
+			       error)) {
+      return FALSE;
+    }
+  } break;
+  default:
+    g_error("Unhandled format %d", self->format);
+  }
+  return TRUE;
+}
+
+static gboolean
 _send_SetPixelFormat(VncClient *self,
 		     guint bpp, guint depth, gboolean be, gboolean tru,
-		     guint rmax, guint gmax, guint bmax,
-		     guint rsh, guint gsh, guint bsh,
+		     guint max[3], guint shift[3],
 		     GError **error)
 {
+  g_debug("-> SetPixelFormat bpp=%u", bpp);
   self->bpp = bpp;
   self->depth = depth;
   self->be = be;
   self->tru = tru;
-  self->max[0] = rmax;
-  self->max[1] = gmax;
-  self->max[2] = bmax;
-  self->shift[0] = rsh;
-  self->shift[1] = gsh;
-  self->shift[2] = bsh;
+  self->max[0] = max[0];
+  self->max[1] = max[1];
+  self->max[2] = max[2];
+  self->shift[0] = shift[0];
+  self->shift[1] = shift[1];
+  self->shift[2] = shift[2];
   struct {
     guint8 mtype;
     guint8 _pad[3];
@@ -318,28 +360,50 @@ _send_SetPixelFormat(VncClient *self,
     guint8 depth;
     guint8 be;
     guint8 tru;
-    guint16 rmax, gmax, bmax;
-    guint8 rsh, gsh, bsh;
+    guint16 max[3];
+    guint8 shift[3];
     guint8 _pad2[3];
   } msg;
+  memset(&msg, 0, sizeof(msg));
   msg.mtype = CLIENT_MSG_SetPixelFormat;
   msg.bpp = bpp;
   msg.depth = depth;
   msg.be = be;
   msg.tru = tru;
-  msg.rmax = htons(rmax);
-  msg.gmax = htons(gmax);
-  msg.bmax = htons(bmax);
-  msg.rsh = rsh;
-  msg.gsh = gsh;
-  msg.bsh = bsh;
+  msg.max[0] = htons(max[0]);
+  msg.max[1] = htons(max[1]);
+  msg.max[2] = htons(max[2]);
+  msg.shift[0] = shift[0];
+  msg.shift[1] = shift[1];
+  msg.shift[2] = shift[2];
   WRITE(&msg, sizeof(msg));
   _calc_pixel(self);
   return TRUE;
 }
 
 static gboolean
-_send_FrameBufferUpdateRequest(VncClient *self,
+_send_SetEncodings(VncClient *self, const gint encs[], gsize numenc,
+		   GError **error)
+{
+  struct {
+    guint8 mtype, _pad;
+    guint16 numenc;
+  } msg;
+  int i;
+  g_debug("-> SetEncodings numenc=%d", numenc);
+  memset(&msg, 0, sizeof(msg));
+  msg.mtype = CLIENT_MSG_SetEncodings;
+  msg.numenc = ntohs(numenc);
+  WRITE(&msg, sizeof(msg));
+  for (i=0; i < numenc; i++) {
+    WRITEI32(encs[i]);
+  }
+  FLUSH();
+  return TRUE;
+}
+
+static gboolean
+_send_FramebufferUpdateRequest(VncClient *self,
 			       guint xpos, guint ypos, guint width, guint height,
 			       gboolean incremental,
 			       GError **error)
@@ -349,6 +413,8 @@ _send_FrameBufferUpdateRequest(VncClient *self,
     guint16 xpos, ypos;
     guint16 width, height;
   } msg;
+  g_debug("-> FramebufferUpdateRequest @%u,%u %ux%u inc=%d",
+	  xpos, ypos, width, height, incremental);
   msg.msgtype = CLIENT_MSG_FramebufferUpdateRequest;
   msg.incremental = incremental;
   msg.xpos = htons(xpos);
@@ -363,7 +429,7 @@ _send_FrameBufferUpdateRequest(VncClient *self,
 gboolean
 vncclient_request_all(VncClient *self, GError **error)
 {
-  return _send_FrameBufferUpdateRequest(self, 0, 0, self->width, self->height, FALSE, error);
+  return _send_FramebufferUpdateRequest(self, 0, 0, self->width, self->height, FALSE, error);
 }
 
 static void
@@ -396,7 +462,7 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
   guint16 nrect, i;
   READ(&pad, 1);
   READU16(&nrect);
-  g_debug(" nrect = %d", nrect);
+  g_debug("FramebufferUpdate nrect=%d", nrect);
   for (i=0; i < nrect; i++) {
     guint16 xpos, ypos;
     guint16 width, height;
@@ -409,10 +475,10 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
     g_debug(" [%d] pos=(%d,%d) size=(%d,%d) enc=%d",
 	    i, xpos,ypos, width,height, enc);
     switch (enc) {
-#if NOTYET
     case ENCODING_Raw:
       if (! _update_RAW(self, xpos,ypos, width,height, error)) return FALSE;
       break;
+#if NOTYET
     case ENCODING_CopyRect:
       if (! _update_COPYRECT(self, xpos,ypos, width,height, error)) return FALSE;
       break;
@@ -429,13 +495,41 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
 }
 
 static gboolean
+_update_RAW(VncClient *self, guint xpos,guint ypos, guint width, guint height,
+	    GError **error)
+{
+  int i;
+  gsize rowbytes = width * self->pixbytes;
+  guint16 *row = g_new(guint16, width);
+  for (i=0; i < height; i++) {
+    READ(row, rowbytes);
+    if (width <= 1) {
+      g_debug("  [%d]: %04x", i, row[0]);
+    } else if (width <= 2) {
+      g_debug("  [%d]: %04x %04x", i, row[0],row[1]);
+    } else if (width <= 3) {
+      g_debug("  [%d]: %04x %04x %04x", i, row[0],row[1],row[2]);
+    } else {
+      g_debug("  [%d]: %04x %04x %04x %04x%s", i, row[0],row[1],row[2],row[3],
+	      width > 4 ? "...":"");
+    }
+  }
+  g_free(row);
+  return TRUE;
+}
+
+static gboolean
 _read(VncClient *self, void *data, size_t size, GError **error)
 {
-  size_t nread;
-  nread = read(self->sock, data, size);
-  if (nread < size) {
-    ERROR1(SOCK_READ, "Socket read error %d", errno);
-    return FALSE;
+  size_t done;
+  for (done=0; done < size; ) {
+    size_t nread;
+    nread = read(self->sock, (char *)data + done, size-done);
+    if (nread < 0) {
+      ERROR1(SOCK_READ, "Socket read error %d", errno);
+      return FALSE;
+    }
+    done += nread;
   }
   return TRUE;
 }
