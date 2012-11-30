@@ -532,59 +532,51 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
   return TRUE;
 }
 
+/*--- Helper functions defined one per bpp-size */
+#define SYMN(s) s ## 8
+#include "pixels.c"
+#undef SYMN
+
+#define SYMN(s) s ## 16
+#include "pixels.c"
+#undef SYMN
+
+#define SYMN(s) s ## 32
+#include "pixels.c"
+#undef SYMN
+
 static gboolean
-_update_RAW(VncClient *self, guint xpos,guint ypos, guint width, guint height,
-	    GError **error)
+_update_RAW(VncClient *self, guint xpos,guint ypos,
+	    guint width, guint height, GError **error)
 {
-  int i;
-  gsize rowbytes = width * self->pixbytes;
-  /*--- FIXME assumes 16-bit */
-  guint16 *row = g_new(guint16, width);
-  for (i=0; i < height; i++) {
-    READ(row, rowbytes);
-    if (width <= 1) {
-      g_debug("  [%d]: %04x", i, row[0]);
-    } else if (width <= 2) {
-      g_debug("  [%d]: %04x %04x", i, row[0],row[1]);
-    } else if (width <= 3) {
-      g_debug("  [%d]: %04x %04x %04x", i, row[0],row[1],row[2]);
-    } else {
-      g_debug("  [%d]: %04x %04x %04x %04x%s", i, row[0],row[1],row[2],row[3],
-	      width > 4 ? "...":"");
-    }
-    if (CAN(self->display, paint_row)) {
-      if (! CALL5(self->display, paint_row, xpos, ypos+i, width, row, error)) {
-	return FALSE;
-      }
-    }
+  switch (self->bpp) {
+  case 8:
+    return _update_RAW8(self, xpos,ypos, width,height, error);
+  case 16:
+    return _update_RAW16(self, xpos,ypos, width,height, error);
+  case 32:
+    return _update_RAW32(self, xpos,ypos, width,height, error);
+  default:
+    g_error("Unsupported %d bpp", self->bpp);
+    return FALSE;
   }
-  g_free(row);
-  return TRUE;
 }
 
 static gboolean
-_update_RRE(VncClient *self, guint xpos,guint ypos, guint width, guint height,
-	    GError **error)
+_update_RRE(VncClient *self, guint xpos,guint ypos,
+	    guint width, guint height, GError **error)
 {
-  guint32 nsub;
-  guint16 fg, bg;
-  guint16 x,y,w,h;
-  guint i;
-  READU32(&nsub);
-  READ(&bg, sizeof(bg));
-  g_debug("  nsub=%u bg=%04x", nsub, bg);
-  if (! _fill_rect(self, xpos, ypos, width, height, bg, error)) return FALSE;
-  for (i=0; i < nsub; i++) {
-    READ(&fg, sizeof(fg));
-    READU16(&x);
-    READU16(&y);
-    READU16(&w);
-    READU16(&h);
-    g_debug("  {%d}: pos=(%d,%d) size=(%d,%d) fg=%04x",
-	    i, x,y, w,h, fg);
-    if (! _fill_rect(self, xpos+x, ypos+y, w, h, fg, error)) return FALSE;
+  switch (self->bpp) {
+  case 8:
+    return _update_RRE8(self, xpos,ypos, width,height, error);
+  case 16:
+    return _update_RRE16(self, xpos,ypos, width,height, error);
+  case 32:
+    return _update_RRE32(self, xpos,ypos, width,height, error);
+  default:
+    g_error("Unsupported %d bpp", self->bpp);
+    return FALSE;
   }
-  return TRUE;
 }
 
 static gboolean

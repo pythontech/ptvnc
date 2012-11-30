@@ -12,7 +12,7 @@ GLIB_LIBS = -L/usr/lib -lglib-2.0
 
 ptvncc_FLAGS = $(GLIB_FLAGS)
 ptvncc_LIBS = $(GLIB_LIBS)
-ptvncc.o:	ptvncc.h
+ptvncc.o:	ptvncc.h pixels.c
 
 %:		%.o
 		$(LD) $(LDFLAGS) -o $@ $< $($*_LIBS)
