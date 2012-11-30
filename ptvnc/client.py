@@ -318,8 +318,8 @@ class VncClient(object):
 		subtype = ord(self.read(1))
 		if subtype & hextile.RAW:
 		    for y in range(y0, y1):
-			row = self.read_pixels(x1-x0)
-			self.display.paint_row(x0,y0, x1-x0, pixels)
+			pixels = self.read_pixels(x1-x0)
+			self.display.paint_row(x0,y, x1-x0, pixels)
 		else:
 		    if subtype & hextile.BG:
 			bg = self.read_pixel()
