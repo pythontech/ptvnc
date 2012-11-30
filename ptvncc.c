@@ -73,6 +73,8 @@ static gboolean _update_RAW(VncClient *self, guint xpos,guint ypos,
 			    guint width, guint height, GError **error);
 static gboolean _update_RRE(VncClient *self, guint xpos,guint ypos,
 			    guint width, guint height, GError **error);
+static gboolean _update_Hextile(VncClient *self, guint xpos,guint ypos,
+				guint width, guint height, GError **error);
 static gboolean _fill_rect(VncClient *self,
 			   guint x, guint y, guint w, guint h, guint pixel,
 			   GError **error);
@@ -107,6 +109,7 @@ enum {
 
 /*--- Encodings currently supported by client, in preference order */
 static const gint encodings[] = {
+  ENCODING_Hextile,
   ENCODING_RRE,
   ENCODING_Raw,
   ENCODING_CopyRect,
@@ -518,6 +521,9 @@ _recv_FramebufferUpdate(VncClient *self, GError **error)
     case ENCODING_RRE:
       if (! _update_RRE(self, xpos,ypos, width,height, error)) return FALSE;
       break;
+    case ENCODING_Hextile:
+      if (! _update_Hextile(self, xpos,ypos, width,height, error)) return FALSE;
+      break;
     default:
       ERROR1(BAD_ENCODING, "Unexpected rectangle encoding %d", enc);
       return FALSE;
@@ -573,6 +579,23 @@ _update_RRE(VncClient *self, guint xpos,guint ypos,
     return _update_RRE16(self, xpos,ypos, width,height, error);
   case 32:
     return _update_RRE32(self, xpos,ypos, width,height, error);
+  default:
+    g_error("Unsupported %d bpp", self->bpp);
+    return FALSE;
+  }
+}
+
+static gboolean
+_update_Hextile(VncClient *self, guint xpos,guint ypos,
+		guint width, guint height, GError **error)
+{
+  switch (self->bpp) {
+  case 8:
+    return _update_Hextile8(self, xpos,ypos, width,height, error);
+  case 16:
+    return _update_Hextile16(self, xpos,ypos, width,height, error);
+  case 32:
+    return _update_Hextile32(self, xpos,ypos, width,height, error);
   default:
     g_error("Unsupported %d bpp", self->bpp);
     return FALSE;
