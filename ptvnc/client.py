@@ -6,14 +6,38 @@ import socket
 import struct
 import re
 
-from ptvnc.const import client_msg, server_msg, encoding, security
+from ptvnc.const import client_msg, server_msg, encoding, security, hextile
+from ptvnc.pyDes import des
 
 _log = logging.getLogger('vnc')
 
 class VncError(Exception): pass
 
+def nybbles(byte):
+    '''Decompose a byte into two nybbles in the range 0..15'''
+    x = ((byte >> 4) & 15)
+    y = (byte & 15)
+    return x, y
+
+def bitrev(b):
+    '''Reverse the bits ina byte'''
+    rev = 0
+    for i in range(8):
+        if b & (1 << i):
+            rev |= 0x80 >> i
+    return rev
+
+class VncDES(des):
+    def setKey(self, key):
+        revkey = ''.join([chr(bitrev(ord(c))) for c in key])
+        des.setKey(self, revkey)
+
+def ignore(*args, **kw):
+    '''Do-nothing function'''
+    pass
+
 class VncClient(object):
-    def __init__(self, host, port=5900, shared=False, format=None, region=None):
+    def __init__(self, host, port=5900, shared=False, format=None, region=None, password=None, display=None):
 	self.host = host
 	self.port = port
 	self.shared = shared
@@ -21,10 +45,17 @@ class VncClient(object):
 	    raise ValueError, 'Invalid format %r' % format
 	self.format = format
 	self.region = region
+        self.password = password
+	if display is None:
+	    import ptvnc.display
+	    self.display = ptvnc.display.VncDisplay()
+	else:
+	    self.display = display
 
     def run(self):
 	self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	self.sock.connect((self.host, self.port))
+	self.read_count = 0;
 	self.handshake()
 	self.security()
 	self.initialisation()
@@ -33,7 +64,8 @@ class VncClient(object):
 	    self.set_rgb222()
 	elif self.format == 'rgb565':
 	    self.set_rgb565()
-	self.SetEncodings([encoding.RRE, encoding.Raw])
+	#self.SetEncodings([encoding.RRE, encoding.Raw])
+	self.SetEncodings([encoding.Hextile, encoding.RRE, encoding.Raw])
 	self.poll()
 	if self.region is not None:
 	    self.FrameBufferUpdateRequest(0,0, *self.region)
@@ -73,11 +105,21 @@ class VncClient(object):
 	    _log.debug('secs = %r',
 		       ', '.join(['%d=%s' % (n, security.get_name(n))
 				  for n in secs]))
-	    if security.NONE not in secs:
-		raise VncError, 'security.NONE not supported'
-	    else:
+            if security.VNC_Authentication in secs:
+		self.security = security.VNC_Authentication
+		self.write(chr(self.security))
+                _log.info('VNC Auth')
+                challenge = self.read(16)
+                _log.debug('challenge %r', challenge)
+                pw = self.password.ljust(8,'\0')[:8]
+                response = VncDES(pw).encrypt(challenge)
+                _log.debug('response %r', response)
+                self.write(response)
+            elif security.NONE:
 		self.security = security.NONE
 		self.write(chr(self.security))
+            else:
+		raise VncError, 'No supported security type available'
 	    
 	else:
 	    # 3.3
@@ -108,6 +150,7 @@ class VncClient(object):
 		  struct.unpack('>B B B B H H H B B B 3x', head[4:])
 	self.rgbmax = (rmax, gmax, bmax)
 	self.shift = (rsh, gsh, bsh)
+	self.calc_pixel()
 	_log.info('bpp=%d depth=%d, tru=%d max=%r shift=%r',
 		  self.bpp, self.depth, self.tru, self.rgbmax, self.shift)
 	self.name = self.read_string()
@@ -126,16 +169,18 @@ class VncClient(object):
 			  self.bpp, self.depth, self.be, self.tru,
 			  self.rgbmax[0], self.rgbmax[1], self.rgbmax[2],
 			  self.shift[0], self.shift[1], self.shift[2])
+	self.write(msg)
+	self.calc_pixel()
 
     def set_rgb222(self):
 	'''Request 2 bits per pixel as per vncviewer'''
-	self.SetPixelFormat(bpp=8, depth=6, be=0, tru=1,
+	self.SetPixelFormat(bpp=8, depth=6, be=1, tru=1,
 			    rgbmax=(3,3,3), shift=(0,2,4))
 
     def set_rgb565(self):
 	'''Request 5,6,5 bits per pixel'''
-	self.SetPixelFormat(bpp=16, depth=16, be=0, tru=1,
-			    rgbmax=(5,6,5), shift=(0,5,11))
+	self.SetPixelFormat(bpp=16, depth=16, be=1, tru=1,
+			    rgbmax=(31,63,31), shift=(0,5,11))
 
     def SetEncodings(self, encs):
 	msg = struct.pack('>B x H %dI' % len(encs),
@@ -159,6 +204,7 @@ class VncClient(object):
     def poll(self):
 	'''Check for messages from server'''
 	self.sock.settimeout(0.1)
+	start_count = self.read_count
 	try:
 	    ctype = self.read(1)
 	except socket.timeout:
@@ -170,6 +216,7 @@ class VncClient(object):
 		   mtype, server_msg.get_name(mtype))
 	if mtype == server_msg.FrameBufferUpdate:
 	    self.FrameBufferUpdate()
+	    _log.debug('update was %d bytes', self.read_count - start_count)
 	elif mtype == server_msg.SetColourMapEntries:
 	    self.SetColourMapEntries()
 	else:
@@ -227,41 +274,107 @@ class VncClient(object):
 		self.rectangle_Raw(xpos,ypos,width,height)
 	    elif enc == encoding.RRE:
 		self.rectangle_RRE(xpos,ypos,width,height)
+	    elif enc == encoding.Hextile:
+		self.rectangle_Hextile(xpos,ypos,width,height)
 	    else:
-		# FIXME read data according to encoding
 		_log.error('Unhandled encoding %d', enc)
+	self.display.update_done()
 
     def rectangle_Raw(self, xpos,ypos, width,height):
-	rowbytes = width * self.bpp / 8
+	'''Handle a rectangle update in Raw encoding'''
+	rowbytes = width * self.pixbytes
 	_log.debug('  %d bytes', height * rowbytes)
-	for r in range(height):
-	    row = self.read(rowbytes)
+	for dy in range(height):
+	    row = self.read_pixels(width)
 	    # FIXME render into buffer
-	    _log.debug('  {%d}: %s', ypos+r,
-		       ' '.join(['%02x' % ord(c) for c in row[:20]]))
+	    _log.debug('  {%d}: %s', ypos+dy,
+		       ' '.join(['%02x' % p for p in row[:20]]))
+	    self.display.paint_row(xpos,ypos+dy, width, row)
 
     def rectangle_RRE(self, xpos,ypos, width,height):
-	pixbytes = self.bpp / 8
-	pixfmt = {1:'B', 2:'H', 4:'I'}[pixbytes]
-	nsub, bg = struct.unpack('>I'+pixfmt, self.read(4+pixbytes))
+	'''Handle an update rectangle in RRE encoding'''
+	nsub = self.read_u32()
+	bg = self.read_pixel()
 	_log.debug('  nsub=%d bg=%#x', nsub, bg)
+	self.display.fill_rect(xpos,ypos, width,height, bg)
 	for i in range(nsub):
-	    fg, x,y,w,h = struct.unpack('>'+pixfmt+'HHHH',
-					self.read(pixbytes + 8))
+	    fg = self.read_pixel()
+	    x,y,w,h = struct.unpack('>HHHH', self.read(8))
 	    _log.debug('  {%d}: pos=%r size=%r fg=%#x',
 		       i, (x,y), (w,h), fg)
+	    self.display.fill_rect(xpos+x,ypos+y, w,h, fg)
+
+    def rectangle_Hextile(self, xpos,ypos, width,height):
+	'''Handle an update rectangle in Hextile encoding'''
+	cols = (width+15)/16
+	rows = (height+15)/16
+	bg = fg = None
+	for row in range(rows):
+	    y0 = ypos + 16*row
+	    y1 = min(y0+16, ypos+height)
+	    for col in range(cols):
+		x0 = xpos + 16*col
+		x1 = min(x0+16, xpos+width)
+		subtype = ord(self.read(1))
+		if subtype & hextile.RAW:
+		    for y in range(y0, y1):
+			pixels = self.read_pixels(x1-x0)
+			self.display.paint_row(x0,y, x1-x0, pixels)
+		else:
+		    if subtype & hextile.BG:
+			bg = self.read_pixel()
+		    if subtype & hextile.FG:
+			fg = self.read_pixel()
+		    self.display.fill_rect(x0,y0, x1-x0,y1-y0, bg)
+		    if subtype & hextile.ANYSUB:
+			nsub = ord(self.read(1))
+			if subtype & hextile.COLOUR:
+			    for i in range(nsub):
+				colour = self.read_pixel()
+				xy, wh = struct.unpack('>BB', self.read(2))
+				x,y = nybbles(xy)
+				w1,h1 = nybbles(wh)
+				self.display.fill_rect(x0+x,y0+y, w1+1,h1+1, colour)
+			else:
+			    for i in range(nsub):
+				xy, wh = struct.unpack('>BB', self.read(2))
+				x,y = nybbles(xy)
+				w1,h1 = nybbles(wh)
+				self.display.fill_rect(x0+x,y0+y, w1+1,h1+1, fg)
+
+    def calc_pixel(self):
+	'''Cache info for reading pixel off the wire'''
+	self.pixbytes = self.bpp / 8
+	self.pixend = '>' if self.be else '<'
+	self.pixfmt = {1:'B', 2:'H', 4:'I'}[self.pixbytes]
+
+    def read_pixel(self):
+	'''Read a single pixel value off the wire'''
+	pix, = struct.unpack(self.pixend+self.pixfmt, self.read(self.pixbytes))
+	return pix
+
+    def read_pixels(self, count):
+	'''Read a number of pixels off the wire'''
+	format = '%s%d%s' % (self.pixend, count, self.pixfmt)
+	return struct.unpack(format, self.read(count * self.pixbytes))
 
     def read_string(self):
+	'''Read a string preceded by unsigned 32-bit length'''
 	slen = self.read_u32()
 	return self.read(slen)
 
     def read_u32(self):
+	'''Read an unsigned 32-bit int'''
 	c4 = self.read(4)
 	i4, = struct.unpack('>I', c4)
 	return i4
 
     def read(self, nbytes):
-	return self.sock.recv(nbytes)
+	'''Read a number of byted'''
+	data = self.sock.recv(nbytes)
+	self.read_count += len(data)
+	return data
 
     def write(self, msg):
+	'''Write a number of bytes'''
 	self.sock.send(msg)
